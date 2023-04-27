@@ -30,15 +30,19 @@ def main():
     movies, users = read_in_ratings('letterboxd_database/ratings_export.csv', allowed_movie_set)
     #print("Constructing new movie_data.csv...")
     #write_new_movie_data_csv(allowed_movie_set, movies)
+    print("Reading in movie_titles...")
+    movie_titles = read_in_movie_titles(allowed_movie_set)
     print("Constructing edge list...")
     edges = create_edge_list(users, movies, allowed_movie_set)
+    print("Pruning and redistributing edges...")
+    edges = prune_and_redistribute_edge_weights(edges)
     print("Writing edges to edges.csv...")
-    write_edge_list_csv(edges, 'output/edges.csv')
+    write_edge_list_csv(edges, movie_titles, 'output/edges.csv')
 
 
 def get_allowed_movies() -> set[str]:
     movie_set = set()
-    with open('output/significant_movies.csv', "r") as file:
+    with open('modified_inputs/5000_significant_movies.csv', "r") as file:
         for line in file:
             movie_set.add(line.strip())
 
@@ -79,6 +83,20 @@ def read_in_ratings(filepath: str, allowed_movie_set: set[str]) -> (dict[str, tu
                 users[user_id].append((movie_id, rating_value))  
     return (movies, users)
 
+def read_in_movie_titles(allowed_movie_set):
+    movie_titles : dict[str, str]
+    movie_titles = {}
+    with open('letterboxd_database/movie_data.csv', newline='', encoding="utf8") as csvfile:
+        reader = csv.reader(csvfile, delimiter=',')
+        next(reader)
+        for row in reader:
+            if (not row[5] in allowed_movie_set):
+                    continue
+            movie_titles[row[5]] = row[6]
+
+    return movie_titles
+
+
 def write_new_movie_data_csv(allowed_movie_set, movies):
     # read in file
     data : list(str, str, float, int, str)
@@ -116,6 +134,8 @@ def write_new_movie_data_csv(allowed_movie_set, movies):
                 writer.writerow(row)
             except:
                 print("error: " + row)
+
+
 def create_edge_list(users, movies, allowed_movie_set):
     edges : dict[tuple[str, str], tuple[float, int]] # dict of vertex pairs to edge weight, and count
     edges = defaultdict(lambda: [0.0, 0])
@@ -126,11 +146,14 @@ def create_edge_list(users, movies, allowed_movie_set):
     user_count = 0
     for user_id in users:
         user_count+=1
-        print(user_count)
+        if user_count % 15 == 0: print(user_count)
         # loop through every review a user has
-        for i in range(len(users[user_id])):
+        max_reviews = min(200, len(users[user_id])) # TODO: 200 is also arbitrarily chosen
+        for i in range(max_reviews):
             # loop through every other review
-            for j in range(i + 1, len(users[user_id])):
+            for j in range(i+1, max_reviews):
+                if j >= len(users[user_id]) or i >= len(users[user_id]):
+                    continue
                 from_rating = users[user_id][i]
                 to_rating = users[user_id][j]
 
@@ -139,6 +162,7 @@ def create_edge_list(users, movies, allowed_movie_set):
                 to_movie_id = to_rating[0]
                 
                 vertex_pair = (from_movie_id, to_movie_id)
+
 
                 # calculate the weight of this connection from this user. will be averaged into overall edge weight
                 rating_weight = calculate_edge_weight_per_rating(from_rating, to_rating, movies)
@@ -149,25 +173,42 @@ def create_edge_list(users, movies, allowed_movie_set):
                 current_weight = edges[vertex_pair][0]
                 new_weight = (current_weight * num_ratings + rating_weight) / (num_ratings + 1)
                 edges[vertex_pair] = (new_weight, num_ratings + 1)
+
     return edges
 
+def prune_and_redistribute_edge_weights(edges):
+    cutoff_weight = 1.1 # weights greater than this will be culled # TODO: this number is arbitrarily chosen.
+    filtered_dict = {}
+    values = [x[0] for x in edges.values() if x[1] >= 30]  # extract the floats and filter the values by the integer condition
+    for key, value in edges.items():
+        if value[1] >= 30 and value[0] <= cutoff_weight:  # check the integer condition and the float condition
+            filtered_dict[key] = value
+    for key, value in filtered_dict.items():
+        filtered_dict[key] = (value[0] ** 3, value[1])  # cube the float values
+    return filtered_dict
+        
 
 
-
-def write_edge_list_csv(edges, file_name):
-    with open(file_name, 'w', newline='') as csvfile:
+def write_edge_list_csv(edges, movie_titles, file_name):
+    with open(file_name, 'w', newline='', encoding='utf8') as csvfile:
         writer = csv.writer(csvfile)
         writer.writerow(['Source', 'Target', 'Weight', 'Count'])
         for edge, data in edges.items():
-            to_name = fix_movie_name(edge[0])
-            from_name = fix_movie_name(edge[1])
-            writer.writerow([to_name, from_name, data[0], data[1]])
-
+            #to_name = fix_movie_name(edge[0])
+            #from_name = fix_movie_name(edge[1])
+            to_name = movie_titles[edge[0]]
+            from_name = movie_titles[edge[1]]
+            # TODO: this messes up characters with accents, figure out solution or go back to shawn's method
+            try:
+                writer.writerow([to_name, from_name, data[0], data[1]])
+            except:
+                print("AH!")
 
 def calculate_edge_weight_per_rating(from_rating, to_rating, movies) -> float:
     to_average_rating_value = movies[to_rating[0]][0]
     from_average_rating_value = movies[from_rating[0]][0]
 
+    # TODO: highly divisive movies always have high weights... maybe account for standard deviation?
     weight = abs((to_rating[1] - to_average_rating_value) - (from_rating[1] - from_average_rating_value))
     return weight
 
